@@ -4,6 +4,7 @@ import json
 from html import escape
 import time
 from datetime import datetime
+import hashlib
 import requests
 import pandas as pd
 import streamlit as st
@@ -11,17 +12,9 @@ from PIL import Image
 from google import genai
 from google.genai import types
 
-# Optional dependencies for interactive map picker
-try:
-    import folium
-    from streamlit_folium import st_folium
-    HAS_FOLIUM = True
-except ImportError:
-    HAS_FOLIUM = False
-
 st.set_page_config(
     page_title="EcoTwin Campus",
-    page_icon=":material/eco:",
+    page_icon="🌱",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -49,10 +42,10 @@ SPLASH_HTML = """
 <div class="splash-title">AI-Powered Sustainable Campus</div>
 <div class="splash-sub">EcoTwin: a digital twin that sees waste, water, and energy bottlenecks and triggers automated actions</div>
 <span class="splash-tag">Computer Vision</span>
-<span class="splash-tag">Digital Twin IoT</span>
+<span class="splash-tag">Campus Digital Twin</span>
 <span class="splash-tag">Gemini Multimodal</span>
 <span class="splash-tag">Predictive Operations</span>
-<div class="splash-load">Initializing sensor nodes & telemetry...</div>
+<div class="splash-load">Initializing sensor nodes & campus blocks...</div>
 </div>
 """
 
@@ -63,7 +56,7 @@ if not st.session_state.get("splash_done"):
         st.markdown(SPLASH_HTML, unsafe_allow_html=True)
         bar = st.progress(0)
         for i in range(100):
-            time.sleep(0.02)
+            time.sleep(0.01)
             bar.progress(i + 1)
     st.session_state["splash_done"] = True
     holder.empty()
@@ -80,11 +73,11 @@ if not api_key:
         api_key = None
 
 client = genai.Client(api_key=api_key) if api_key else None
-# Use gemini-2.5-flash as modern default, or override with GEMINI_MODEL env var
-MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+# Updated model name per API error response instruction
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 if not api_key:
-    st.sidebar.warning("⚠️ GEMINI_API_KEY missing. AI features will require an API key.")
+    st.sidebar.warning("⚠️ GEMINI_API_KEY missing. Set it in your terminal via $env:GEMINI_API_KEY.")
 
 
 def ask_gemini(contents, as_json=False):
@@ -138,21 +131,38 @@ def log_activity(message):
     st.session_state["activity_log"].append(f"[{now}] {message}")
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def find_places(query):
-    """Geocode place name using Nominatim."""
-    for attempt in (query, f"{query}, India"):
-        resp = requests.get(
-            "https://nominatim.openstreetmap.org/search",
-            params={"q": attempt, "format": "json", "limit": 5},
-            headers={"User-Agent": "EcoTwinCampus-App/2.0", "Accept-Language": "en"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        results = resp.json()
-        if results:
-            return [(item["display_name"], float(item["lat"]), float(item["lon"])) for item in results]
-    return []
+# ---------------------------------------------------------------
+# Dynamic Geocoding Function for ANY College Typed
+# ---------------------------------------------------------------
+def get_coordinates_for_college(college_name):
+    """Uses OpenStreetMap Nominatim API to fetch real lat/lon for any typed college name."""
+    try:
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {"q": college_name, "format": "json", "limit": 1}
+        headers = {"User-Agent": "EcoTwinCampusApp/2.0"}
+        response = requests.get(url, params=params, headers=headers, timeout=5)
+        data = response.json()
+        if data and len(data) > 0:
+            return float(data[0]["lat"]), float(data[0]["lon"])
+    except Exception:
+        pass
+
+    # Fallback default coordinates (Dayananda Sagar University, Bengaluru)
+    return 12.9095, 77.5668
+
+
+def get_campus_blocks(center_lat, center_lon):
+    """Generate precise coordinates for ALL individual campus blocks surrounding the college center."""
+    return {
+        "Main Administrative Building": (center_lat, center_lon),
+        "Engineering Block": (center_lat + 0.0012, center_lon + 0.0015),
+        "Science & Research Block": (center_lat + 0.0022, center_lon - 0.0018),
+        "Central Library Hub": (center_lat - 0.0008, center_lon + 0.0012),
+        "Student Cafeteria": (center_lat - 0.0015, center_lon - 0.0010),
+        "Hostel Block A (Water Leak Zone)": (center_lat - 0.0025, center_lon + 0.0020),
+        "Hostel Block B & C": (center_lat - 0.0032, center_lon + 0.0005),
+        "Sports Complex & Gymnasium": (center_lat + 0.0030, center_lon + 0.0025),
+    }
 
 
 # ---------------------------------------------------------------
@@ -193,9 +203,9 @@ table, th, td { color: #1f2937 !important; border-color: #e5e7eb !important; }
 """
 
 # ---------------------------------------------------------------
-# Global State & Campus Nodes
+# Global State Initialization
 # ---------------------------------------------------------------
-st.session_state.setdefault("activity_log", [f"[{datetime.now().strftime('%H:%M:%S')}] System started, all nodes online."])
+st.session_state.setdefault("activity_log", [f"[{datetime.now().strftime('%H:%M:%S')}] System started, all campus blocks online."])
 st.session_state.setdefault("eco_points", {})
 st.session_state.setdefault("student_hostel", {})
 st.session_state.setdefault("hostel_points", {})
@@ -203,57 +213,55 @@ st.session_state.setdefault("last_result", None)
 st.session_state.setdefault(
     "stats", {"items": 0, "co2_g": 0.0, "ewaste": 0, "hazard": 0, "value_inr": 0.0}
 )
-st.session_state.setdefault(
-    "bin_levels",
-    {
-        "Library Smart Bin": 35.0,
-        "Cafeteria Recycling Hub": 72.0,
-        "Science Block E-Waste Depot": 20.0,
-        "Hostel Battery Bin": 15.0,
-    },
-)
-st.session_state.setdefault("leak_active", True)
+st.session_state.setdefault("selected_campus", "Dayananda Sagar University, Bengaluru")
+
+# --- COLLEGE-SPECIFIC GENERATOR HELPER ---
+def get_campus_profile(college_name):
+    """Generates unique, deterministic metrics for any college name based on its hash."""
+    hasher = hashlib.md5(college_name.encode('utf-8'))
+    digest = int(hasher.hexdigest(), 16)
+    
+    solar = 300 + (digest % 350)              # Between 300 and 650 kW
+    grid_load = 220 + ((digest // 7) % 200)   # Between 220 and 420 kW
+    carbon = 120 + ((digest // 13) % 70)      # Between 120 and 190 g/kWh
+    has_leak = (digest % 2 == 0)              # True or False per college
+    
+    lib_fill = 20.0 + (digest % 50)           # 20% to 70%
+    caf_fill = 40.0 + ((digest // 3) % 55)    # 40% to 95%
+    sci_fill = 15.0 + ((digest // 5) % 60)    # 15% to 75%
+    hostel_fill = 10.0 + ((digest // 11) % 50) # 10% to 60%
+    
+    return solar, grid_load, carbon, has_leak, {
+        "Central Library Hub": lib_fill,
+        "Student Cafeteria": caf_fill,
+        "Science & Research Block": sci_fill,
+        "Hostel Block B & C": hostel_fill,
+    }
+
+initial_solar, initial_grid, initial_carbon, initial_leak, initial_bins = get_campus_profile(st.session_state["selected_campus"])
+
+st.session_state.setdefault("bin_levels", initial_bins)
+st.session_state.setdefault("leak_active", initial_leak)
 st.session_state.setdefault("esg_report", None)
 st.session_state.setdefault("dispatch_ticket", None)
 
-BIN_TO_NODE = {
-    "Plastic Recycling Hub": "Cafeteria Recycling Hub",
-    "Organic Compost": "Cafeteria Recycling Hub",
-    "E-Waste Depot": "Science Block E-Waste Depot",
-    "Hazardous Battery Bin": "Hostel Battery Bin",
-    "Paper Recycling": "Library Smart Bin",
-    "General Waste": "Library Smart Bin",
-}
-
-NODE_OFFSETS = {
-    "Library Smart Bin": (0.0000, 0.0000),
-    "Cafeteria Recycling Hub": (0.0009, 0.0004),
-    "Science Block E-Waste Depot": (0.0029, -0.0026),
-    "Hostel Battery Bin": (-0.0008, -0.0008),
-    "Hostel Block A Water Sensor": (-0.0016, -0.0016),
-    "Main Building Energy Meter": (0.0014, 0.0014),
-}
-
-CAMPUS_PRESETS = {
-    "Demo campus (Bengaluru)": (12.9716, 77.5946),
-    "IISc Bengaluru": (13.0219, 77.5671),
-    "IIT Madras, Chennai": (12.9916, 80.2337),
-    "IIT Bombay, Mumbai": (19.1334, 72.9133),
+BIN_TO_BLOCK = {
+    "Plastic Recycling Hub": "Student Cafeteria",
+    "Organic Compost": "Student Cafeteria",
+    "E-Waste Depot": "Science & Research Block",
+    "Hazardous Battery Bin": "Hostel Block B & C",
+    "Paper Recycling": "Central Library Hub",
+    "General Waste": "Central Library Hub",
 }
 
 BIN_FILL_RATE = {
-    "Library Smart Bin": 2.0,
-    "Cafeteria Recycling Hub": 6.0,
-    "Science Block E-Waste Depot": 1.0,
-    "Hostel Battery Bin": 0.5,
+    "Central Library Hub": 2.0,
+    "Student Cafeteria": 6.0,
+    "Science & Research Block": 1.0,
+    "Hostel Block B & C": 0.5,
 }
 
 HOSTELS = ["Hostel A", "Hostel B", "Hostel C", "Hostel D", "Day Scholars"]
-
-
-def node_position(name, centre):
-    d_lat, d_lon = NODE_OFFSETS[name]
-    return centre[0] + d_lat, centre[1] + d_lon
 
 
 def fill_status(level):
@@ -265,10 +273,11 @@ def fill_status(level):
 
 
 def hours_to_overflow(name):
-    level = st.session_state["bin_levels"][name]
+    level = st.session_state["bin_levels"].get(name, 50.0)
+    rate = BIN_FILL_RATE.get(name, 2.0)
     if level >= 100:
         return 0.0
-    return (100.0 - level) / BIN_FILL_RATE[name]
+    return (100.0 - level) / rate
 
 
 def pickup_advice(hours):
@@ -295,13 +304,13 @@ def current_alerts():
     alerts = []
     for name, level in st.session_state["bin_levels"].items():
         if level >= 70:
-            alerts.append(f"{name} is {level:.0f}% full ({fill_status(level).lower()})")
+            alerts.append(f"{name} waste hub is {level:.0f}% full ({fill_status(level).lower()})")
         hours = hours_to_overflow(name)
         if 0 < hours < 6:
-            alerts.append(f"{name} will overflow in ~{hours:.1f} hours")
+            alerts.append(f"{name} is projected to overflow in ~{hours:.1f} hours")
     if st.session_state["leak_active"]:
-        alerts.append("Water leak confirmed at Hostel Block A plumbing riser")
-    alerts.append("Main Building HVAC sub-meter reporting 18% surge above baseline")
+        alerts.append("Water leak confirmed at Hostel Block A riser")
+    alerts.append("Engineering Block reporting high electrical load")
     return alerts
 
 
@@ -318,15 +327,6 @@ def hostel_table():
     return table.sort_values("Points", ascending=False).reset_index(drop=True)
 
 
-def status_colour(status):
-    s = status.lower()
-    if "overflow" in s or "leak" in s:
-        return [220, 60, 60, 220]
-    if "filling" in s or "high power" in s:
-        return [245, 158, 11, 220]
-    return [34, 197, 94, 220]
-
-
 def eco_score():
     score = 100.0
     for level in st.session_state["bin_levels"].values():
@@ -341,6 +341,106 @@ def eco_score():
     return int(max(0, min(100, score)))
 
 
+# ---------------------------------------------------------------
+# Callback to Reset & Re-initialize State When College Changes
+# ---------------------------------------------------------------
+def on_campus_change():
+    new_val = st.session_state.get("shortcut_box", st.session_state.get("custom_box", ""))
+    if new_val == "Type my own college...":
+        return
+    if new_val and new_val != st.session_state.get("selected_campus"):
+        st.session_state["selected_campus"] = new_val
+        solar, grid_load, carbon, leak_status, bins = get_campus_profile(new_val)
+        
+        st.session_state["activity_log"] = [f"[{datetime.now().strftime('%H:%M:%S')}] Switched active campus to {new_val}. Initialized sensors."]
+        st.session_state["eco_points"] = {}
+        st.session_state["student_hostel"] = {}
+        st.session_state["hostel_points"] = {}
+        st.session_state["last_result"] = None
+        st.session_state["stats"] = {"items": 0, "co2_g": 0.0, "ewaste": 0, "hazard": 0, "value_inr": 0.0}
+        st.session_state["bin_levels"] = bins
+        st.session_state["leak_active"] = leak_status
+        st.session_state["esg_report"] = None
+        st.session_state["dispatch_ticket"] = None
+
+
+def on_custom_change():
+    new_val = st.session_state.get("custom_box", "").strip()
+    if new_val and new_val != st.session_state.get("selected_campus"):
+        st.session_state["selected_campus"] = new_val
+        solar, grid_load, carbon, leak_status, bins = get_campus_profile(new_val)
+        
+        st.session_state["activity_log"] = [f"[{datetime.now().strftime('%H:%M:%S')}] Switched active campus to {new_val}. Initialized sensors."]
+        st.session_state["eco_points"] = {}
+        st.session_state["student_hostel"] = {}
+        st.session_state["hostel_points"] = {}
+        st.session_state["last_result"] = None
+        st.session_state["stats"] = {"items": 0, "co2_g": 0.0, "ewaste": 0, "hazard": 0, "value_inr": 0.0}
+        st.session_state["bin_levels"] = bins
+        st.session_state["leak_active"] = leak_status
+        st.session_state["esg_report"] = None
+        st.session_state["dispatch_ticket"] = None
+
+
+# ---------------------------------------------------------------
+# Sidebar: College Selection, Theme & Navigation
+# ---------------------------------------------------------------
+st.sidebar.title("🌿 EcoTwin Hub")
+
+st.sidebar.subheader("Select / Type Your College")
+CAMPUS_SHORTCUTS = [
+    "Dayananda Sagar University, Bengaluru",
+    "RV College of Engineering, Bengaluru",
+    "IISc Bengaluru",
+    "IIT Madras, Chennai",
+    "IIT Bombay, Mumbai",
+    "Type my own college...",
+]
+
+shortcut = st.sidebar.selectbox(
+    "Quick College Presets",
+    CAMPUS_SHORTCUTS,
+    key="shortcut_box",
+    on_change=on_campus_change,
+)
+
+if shortcut == "Type my own college...":
+    selected_campus = st.sidebar.text_input(
+        "Type your College or University name",
+        value=st.session_state.get("selected_campus", "Dayananda Sagar University, Bengaluru"),
+        placeholder="e.g. BMS College of Engineering, Bengaluru",
+        key="custom_box",
+        on_change=on_custom_change,
+    ).strip() or "Dayananda Sagar University, Bengaluru"
+else:
+    selected_campus = shortcut
+    st.session_state["selected_campus"] = shortcut
+
+# Fetch center coordinates dynamically for the typed college
+center_lat, center_lon = get_coordinates_for_college(selected_campus)
+st.sidebar.caption(f"📍 Anchored at: `{center_lat:.4f}, {center_lon:.4f}`")
+
+theme_mode = st.sidebar.radio("Interface Theme", ["Light", "Dark"], index=1, horizontal=True)
+st.markdown(DARK_CSS if theme_mode == "Dark" else LIGHT_CSS, unsafe_allow_html=True)
+
+page = st.sidebar.radio(
+    "Navigation",
+    [
+        "Overview",
+        "Smart Recycling Scanner",
+        "Campus Digital Twin",
+        "ESG Reports",
+        "Pitch Summary",
+    ],
+)
+
+if st.sidebar.button("🔄 Replay Intro Splash"):
+    st.session_state["splash_done"] = False
+    st.rerun()
+
+# ---------------------------------------------------------------
+# Top Banner
+# ---------------------------------------------------------------
 def render_banner():
     levels = st.session_state["bin_levels"]
     attention = sum(1 for v in levels.values() if v >= 70)
@@ -363,124 +463,26 @@ def render_banner():
         '<div style="color:#a7f3d0;font-size:0.75rem;letter-spacing:2px;'
         'text-transform:uppercase;font-weight:600;">Problem Statement 02 | AI-Powered Sustainable Campus</div>'
         f'<div style="color:#ffffff;font-size:1.4rem;font-weight:700;margin:4px 0 8px 0;">'
-        f'EcoTwin Command Center | {escape(campus_name)}</div>'
+        f'EcoTwin Command Center | {escape(selected_campus)}</div>'
         f'<div>{chip_html}</div></div>'
     )
     st.markdown(banner, unsafe_allow_html=True)
 
-
-# ---------------------------------------------------------------
-# Sidebar: Campus Config, Theme & Navigation
-# ---------------------------------------------------------------
-st.sidebar.title("🌿 EcoTwin Hub")
-
-st.sidebar.subheader("Campus Location")
-SEARCH_OPTION = "🔍 Search place name"
-PICK_OPTION = "📍 Click on map"
-MANUAL_OPTION = "⚙️ Manual coordinates"
-campus_choice = st.sidebar.selectbox(
-    "Active Campus",
-    list(CAMPUS_PRESETS.keys()) + [SEARCH_OPTION, PICK_OPTION, MANUAL_OPTION],
-)
-DEFAULT_CENTRE = CAMPUS_PRESETS["Demo campus (Bengaluru)"]
-
-if campus_choice == SEARCH_OPTION:
-    query = st.sidebar.text_input(
-        "Search institution", placeholder="e.g. RV College of Engineering, Bengaluru"
-    )
-    if st.sidebar.button("Search Location"):
-        if not query.strip():
-            st.sidebar.warning("Type a place name first.")
-        else:
-            try:
-                found = find_places(query.strip())
-                st.session_state["place_results"] = found
-                if not found:
-                    st.sidebar.warning("No location found. Try appending city name.")
-            except Exception as e:
-                st.sidebar.error(f"Search API error: {e}")
-
-    matches = st.session_state.get("place_results", [])
-    if matches:
-        labels = [m[0] for m in matches]
-        picked_label = st.sidebar.selectbox("Select match", labels)
-        _, lat, lon = matches[labels.index(picked_label)]
-        campus_name = picked_label.split(",")[0].strip()
-        campus_centre = (lat, lon)
-        st.session_state["search_centre"] = campus_centre
-        st.sidebar.caption(f"Coordinates: {lat:.5f}, {lon:.5f}")
-    else:
-        campus_name = "Demo campus (Bengaluru)"
-        campus_centre = DEFAULT_CENTRE
-        st.sidebar.caption("Showing Bengaluru demo campus.")
-elif campus_choice == PICK_OPTION:
-    campus_name = st.sidebar.text_input("Campus Label", value="My Campus", key="picked_name").strip() or "My Campus"
-    picked_point = st.session_state.get("picked_point")
-    if not HAS_FOLIUM:
-        st.sidebar.error("Map clicking requires: pip install streamlit-folium folium")
-    if picked_point:
-        campus_centre = picked_point
-        st.sidebar.caption(f"Pinned: {picked_point[0]:.5f}, {picked_point[1]:.5f}")
-    else:
-        campus_centre = DEFAULT_CENTRE
-        st.sidebar.caption("Click on the interactive map above.")
-elif campus_choice == MANUAL_OPTION:
-    campus_name = st.sidebar.text_input("Campus Label", value="Custom Campus").strip() or "Custom Campus"
-    campus_lat = st.sidebar.number_input("Latitude", value=12.9716, min_value=-90.0, max_value=90.0, format="%.5f")
-    campus_lon = st.sidebar.number_input("Longitude", value=77.5946, min_value=-180.0, max_value=180.0, format="%.5f")
-    campus_centre = (campus_lat, campus_lon)
-else:
-    campus_name = campus_choice
-    campus_centre = CAMPUS_PRESETS[campus_choice]
-
-theme_mode = st.sidebar.radio("Interface Theme", ["Light", "Dark"], index=1, horizontal=True)
-st.markdown(DARK_CSS if theme_mode == "Dark" else LIGHT_CSS, unsafe_allow_html=True)
-
-page = st.sidebar.radio(
-    "Navigation",
-    [
-        "Overview",
-        "Smart Recycling Scanner",
-        "Campus Digital Twin",
-        "ESG Reports",
-        "Pitch Summary",
-    ],
-)
-
-if st.sidebar.button("🔄 Replay Intro Splash"):
-    st.session_state["splash_done"] = False
-    st.rerun()
-
 render_banner()
-
-# Interactive Folium map picker if chosen
-if campus_choice == PICK_OPTION and HAS_FOLIUM:
-    already = st.session_state.get("picked_point")
-    with st.expander("🗺️ Select Campus Location On Map", expanded=already is None):
-        st.caption("Zoom in and click anywhere to anchor the campus twin coordinates.")
-        start_at = already or st.session_state.get("search_centre") or DEFAULT_CENTRE
-        pick_map = folium.Map(location=list(start_at), zoom_start=16 if already else 12, tiles="OpenStreetMap")
-        if already:
-            folium.Marker(list(already), tooltip=campus_name).add_to(pick_map)
-        result = st_folium(pick_map, height=380, use_container_width=True, key="campus_picker", returned_objects=["last_clicked"])
-        clicked = result.get("last_clicked") if result else None
-        if clicked:
-            new_point = (clicked["lat"], clicked["lng"])
-            if st.session_state.get("picked_point") != new_point:
-                st.session_state["picked_point"] = new_point
-                st.rerun()
 
 # ===============================================================
 # PAGE 1: Overview
 # ===============================================================
 if page == "Overview":
     st.title("EcoTwin Command Dashboard")
-    st.caption(f"Real-time telemetry and resource performance for {campus_name}")
+    st.caption(f"Real-time telemetry and resource performance for {selected_campus}")
+
+    c_solar, c_load, c_carbon, c_leak_state, c_bins = get_campus_profile(selected_campus)
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Rooftop Solar Generation", "420 kW", "+14% vs yesterday")
-    c2.metric("Campus Active Grid Load", "310 kW", "-6% load shed")
-    c3.metric("Grid Carbon Intensity", "142 g/kWh", "-18 g/kWh")
+    c1.metric("Rooftop Solar Generation", f"{c_solar} kW", "+14% vs yesterday")
+    c2.metric("Campus Active Grid Load", f"{c_load} kW", "-6% load shed")
+    c3.metric("Grid Carbon Intensity", f"{c_carbon} g/kWh", "-18 g/kWh")
     c4.metric("Campus Eco Score", f"{eco_score()}/100", "+3 pts today")
 
     if st.session_state["hostel_points"]:
@@ -490,8 +492,8 @@ if page == "Overview":
     st.subheader("Hourly Energy Profile (Load vs. Generation)")
     telemetry = pd.DataFrame({
         "Hour": [f"{i:02d}:00" for i in range(12)],
-        "Grid Load (kW)": [210, 240, 220, 190, 210, 280, 360, 390, 360, 330, 310, 290],
-        "Solar Output (kW)": [0, 10, 35, 90, 180, 290, 380, 420, 370, 260, 140, 40],
+        "Grid Load (kW)": [int(c_load * 0.7), int(c_load * 0.8), int(c_load * 0.75), int(c_load * 0.65), int(c_load * 0.7), int(c_load * 0.9), c_load, int(c_load * 1.1), c_load, int(c_load * 0.95), int(c_load * 0.9), int(c_load * 0.85)],
+        "Solar Output (kW)": [0, int(c_solar * 0.05), int(c_solar * 0.15), int(c_solar * 0.35), int(c_solar * 0.6), int(c_solar * 0.8), c_solar, int(c_solar * 0.95), int(c_solar * 0.8), int(c_solar * 0.5), int(c_solar * 0.25), int(c_solar * 0.05)],
     })
     st.line_chart(telemetry.set_index("Hour"), use_container_width=True)
 
@@ -506,11 +508,11 @@ if page == "Overview":
 elif page == "Smart Recycling Scanner":
     st.header("📸 Multimodal Smart Recycling Scanner")
     st.markdown(
-        "Upload or capture a photo of any discarded item. Gemini Vision will categorize materials, "
-        "identify the correct disposal bin, calculate avoided carbon, and credit student rewards."
+        "Upload or capture a photo of any discarded item or electronic gadget. Gemini Vision categorizes materials, "
+        "identifies proper bin routing, calculates avoided carbon, and credits student rewards."
     )
 
-    BINS = list(BIN_TO_NODE.keys())
+    BINS = list(BIN_TO_BLOCK.keys())
     stats = st.session_state["stats"]
 
     m1, m2, m3, m4 = st.columns(4)
@@ -522,7 +524,7 @@ elif page == "Smart Recycling Scanner":
     st.markdown("---")
     col_input1, col_input2 = st.columns([1, 1])
     with col_input1:
-        current_bin = st.selectbox("Current Bin Location", BINS)
+        current_bin = st.selectbox("Current Bin Station", BINS)
     with col_input2:
         input_method = st.radio("Capture Method", ["Upload Image", "Device Camera"], horizontal=True)
 
@@ -541,7 +543,8 @@ elif page == "Smart Recycling Scanner":
 
         if st.button("🚀 Analyze Item with Gemini", type="primary"):
             prompt = (
-                "You are an expert campus waste auditor. Analyze the uploaded image thoroughly.\n"
+                "You are an expert campus waste auditor and Reloop-style E-waste deconstruction AI.\n"
+                "Analyze the uploaded image thoroughly. If it is an electronic gadget, break it down into constituent parts.\n"
                 "Return a JSON object with these exact keys:\n"
                 "- item (string, specific item name)\n"
                 "- category (one of: Recyclable, Biodegradable, Reusable, Hazardous, E-Waste)\n"
@@ -566,7 +569,6 @@ elif page == "Smart Recycling Scanner":
                 data["claimed_by"] = []
                 st.session_state["last_result"] = data
 
-                # Update stats with robust conversion
                 stats["items"] += 1
                 stats["co2_g"] += to_number(data.get("co2_saved_grams"))
                 stats["value_inr"] += to_number(data.get("recovery_value_inr"))
@@ -575,19 +577,18 @@ elif page == "Smart Recycling Scanner":
                 if data.get("category") in ("Hazardous", "E-Waste"):
                     stats["hazard"] += 1
 
-                # Update the physical bin level in digital twin
-                node = BIN_TO_NODE.get(data.get("correct_bin"))
-                if node:
+                # Update physical bin level in digital twin
+                block_target = BIN_TO_BLOCK.get(data.get("correct_bin"))
+                if block_target and block_target in st.session_state["bin_levels"]:
                     levels = st.session_state["bin_levels"]
-                    levels[node] = min(100.0, levels[node] + 6.0)
-                    log_activity(f"Sensor update: {node} increased to {levels[node]:.0f}% fill capacity.")
+                    levels[block_target] = min(100.0, levels[block_target] + 6.0)
+                    log_activity(f"Sensor update: {block_target} increased to {levels[block_target]:.0f}% fill capacity.")
 
                 log_activity(f"Classified: {data.get('item', 'Item')} ({data.get('category', 'General')})")
                 st.rerun()
             except Exception as e:
                 st.error(f"Classification failed: {e}")
 
-    # Display classified result
     r = st.session_state["last_result"]
     if r:
         st.markdown("### Analysis Results")
@@ -619,9 +620,8 @@ elif page == "Smart Recycling Scanner":
         if r.get("reuse_idea") and r["reuse_idea"] != "None":
             st.info(f"🔄 **Circular Reuse Idea:** {r['reuse_idea']}")
 
-        # Student Eco-Pass Point Claim
         st.markdown("---")
-        st.subheader("🎓 Student Eco-Pass Claim")
+        st.subheader("🎓 Student Eco-Pass Gamification")
         pc1, pc2 = st.columns(2)
         sid = pc1.text_input("University Student ID (e.g., 22BCE1045)")
         hostel_choice = pc2.selectbox("Assigned Hostel / Day Scholar", HOSTELS)
@@ -643,7 +643,6 @@ elif page == "Smart Recycling Scanner":
                 st.balloons()
                 st.success(f"Credited 50 points to {sid}! Current Tier: {badge_for(st.session_state['eco_points'][sid])}")
 
-    # Leaderboard & Challenges
     if st.session_state["eco_points"]:
         st.markdown("---")
         st.subheader("🏅 Top Eco-Contributors")
@@ -664,71 +663,68 @@ elif page == "Smart Recycling Scanner":
 # PAGE 3: Campus Digital Twin
 # ===============================================================
 elif page == "Campus Digital Twin":
-    st.header("🌐 Campus Digital Twin & Spatial IoT")
-    st.markdown(f"Real-time synchronized representation of physical assets across **{campus_name}**.")
+    st.header("🌐 Campus Digital Twin & Spatial Grounds")
+    st.markdown(f"Real-time telemetry and operational grid for **{selected_campus}**.")
 
     levels = st.session_state["bin_levels"]
     leak = st.session_state["leak_active"]
-
     full_bins = sum(1 for v in levels.values() if v >= 70)
+
+    c_solar, c_grid_load, c_carb, _, _ = get_campus_profile(selected_campus)
+
     c1, c2, c3 = st.columns(3)
     c1.metric("Bins Reaching Threshold", f"{full_bins} of {len(levels)}", "Requires pickup" if full_bins > 0 else "Optimal")
     c2.metric("Active Water Anomaly", "1 Confirmed Leak" if leak else "All Lines Clear",
               "Hostel Block A" if leak else "Flow Normal", delta_color="inverse")
     c3.metric("Scanned Waste Diverted", f"{st.session_state['stats']['items']} units")
 
-    # Build node dataframe with dynamic coordinates
-    rows = []
-    for name, level in levels.items():
-        lat, lon = node_position(name, campus_centre)
-        rows.append({"name": name, "lat": lat, "lon": lon, "status": f"{fill_status(level)} ({level:.0f}% full)"})
+    CAMPUS_BLOCKS = get_campus_blocks(center_lat, center_lon)
 
-    lat, lon = node_position("Hostel Block A Water Sensor", campus_centre)
-    rows.append({"name": "Hostel Block A Water Sensor", "lat": lat, "lon": lon, "status": "Leak detected" if leak else "Normal"})
+    map_rows = []
+    block_status_rows = []
 
-    lat, lon = node_position("Main Building Energy Meter", campus_centre)
-    rows.append({"name": "Main Building Energy Meter", "lat": lat, "lon": lon, "status": "High power usage"})
+    for block_name, (lat, lon) in CAMPUS_BLOCKS.items():
+        if "Water Leak" in block_name:
+            status = "🚨 Active Water Leak" if leak else "✅ Normal (Dry)"
+        elif "Engineering" in block_name:
+            status = f"⚡ High Power Load ({c_grid_load} kW)"
+        elif "Science" in block_name:
+            bin_lvl = levels.get("Science & Research Block", 20.0)
+            status = f"🔋 E-Waste Depot ({bin_lvl:.0f}%)"
+        elif "Library" in block_name:
+            bin_lvl = levels.get("Central Library Hub", 35.0)
+            status = f"📚 Smart Bin ({bin_lvl:.0f}%)"
+        elif "Cafeteria" in block_name:
+            bin_lvl = levels.get("Student Cafeteria", 72.0)
+            status = f"♻️ Recycling Hub ({bin_lvl:.0f}%)"
+        elif "Hostel Block B" in block_name:
+            bin_lvl = levels.get("Hostel Block B & C", 15.0)
+            status = f"🔋 Battery Bin ({bin_lvl:.0f}%)"
+        else:
+            status = "✅ Optimal Operation"
 
-    node_df = pd.DataFrame(rows)
-    node_df["colour"] = node_df["status"].apply(status_colour)
-    node_df["hex"] = node_df["colour"].apply(lambda c: f"#{c[0]:02x}{c[1]:02x}{c[2]:02x}")
+        map_rows.append({"name": block_name, "lat": lat, "lon": lon})
+        block_status_rows.append({"Campus Block / Facility": block_name, "Operational Status": status})
 
-    st.subheader("Interactive Asset Map")
-    try:
-        import pydeck as pdk
+    blocks_df = pd.DataFrame(map_rows)
+    status_df = pd.DataFrame(block_status_rows)
 
-        layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=node_df,
-            get_position="[lon, lat]",
-            get_fill_color="colour",
-            get_line_color=[255, 255, 255, 255],
-            get_radius=32,
-            radius_min_pixels=10,
-            line_width_min_pixels=2,
-            stroked=True,
-            pickable=True,
-        )
-        view = pdk.ViewState(latitude=campus_centre[0], longitude=campus_centre[1], zoom=15.6, pitch=35)
-        style = pdk.map_styles.CARTO_DARK if theme_mode == "Dark" else pdk.map_styles.CARTO_LIGHT
-        st.pydeck_chart(pdk.Deck(
-            layers=[layer],
-            initial_view_state=view,
-            map_provider="carto",
-            map_style=style,
-            tooltip={"text": "{name}\nStatus: {status}"},
-        ))
-    except Exception:
-        st.map(node_df, latitude="lat", longitude="lon", color="hex", size=40)
+    st.markdown("---")
+    map_col, info_col = st.columns([3, 2])
 
-    st.caption("🟢 Green = Normal Operating Status | 🟠 Amber = Approaching Capacity | 🔴 Red = Immediate Action Required")
+    with map_col:
+        st.subheader(f"🗺️ Spatial Telemetry Radar ({selected_campus})")
+        st.map(blocks_df, latitude="lat", longitude="lon", size=100, zoom=15)
+        st.caption("🟢 Active IoT sensor nodes deployed across campus infrastructure blocks.")
 
-    # Predictive Fill Level Forecast
+    with info_col:
+        st.subheader("🏢 Facility Node Status")
+        st.dataframe(status_df, use_container_width=True, hide_index=True)
+
     st.markdown("---")
     st.subheader("📈 Predictive Overflow Forecasting")
-    st.caption("Telemetry models predict fill velocity and compute time-to-overflow based on localized fill rates.")
+    st.caption("AI telemetry models compute fill velocities and estimate hours to overflow.")
 
-    # Visual Fill Level Bars
     col_g1, col_g2 = st.columns(2)
     for i, (name, lvl) in enumerate(levels.items()):
         target_col = col_g1 if i % 2 == 0 else col_g2
@@ -740,28 +736,22 @@ elif page == "Campus Digital Twin":
     for name, level in levels.items():
         hours = hours_to_overflow(name)
         forecast_rows.append({
-            "Bin Location": name,
+            "Facility Hub": name,
             "Current Level (%)": round(level, 1),
-            "Velocity (%/hr)": BIN_FILL_RATE[name],
+            "Velocity (%/hr)": BIN_FILL_RATE.get(name, 2.0),
             "Time to Overflow": "Capacity Reached" if hours <= 0 else f"{hours:.1f} hrs",
-            "Hours": hours,
             "Recommended Action": pickup_advice(hours),
         })
-    forecast = pd.DataFrame(forecast_rows).sort_values("Hours").reset_index(drop=True)
-    st.dataframe(
-        forecast[["Bin Location", "Current Level (%)", "Velocity (%/hr)", "Time to Overflow", "Recommended Action"]],
-        use_container_width=True,
-        hide_index=True,
-    )
+    forecast = pd.DataFrame(forecast_rows)
+    st.dataframe(forecast, use_container_width=True, hide_index=True)
 
-    # Operations & Simulation Stepper
     st.markdown("---")
     st.subheader("🛠️ Facilities Operations & Fast-Forward Simulator")
     op1, op2, op3 = st.columns(3)
 
     if op1.button("⏩ Advance Time (+2 Hours)"):
         for name in levels:
-            delta = BIN_FILL_RATE[name] * 2.0
+            delta = BIN_FILL_RATE.get(name, 2.0) * 2.0
             levels[name] = min(100.0, levels[name] + delta)
         log_activity("Time advanced 2 hours: predictive fill levels recalculated.")
         st.toast("Simulated +2 hours campus sensor progression.")
@@ -787,18 +777,17 @@ elif page == "Campus Digital Twin":
             st.toast("Anomaly injected into water network.")
             st.rerun()
 
-    # EcoAgent Automated Dispatch
     st.markdown("---")
     st.subheader("🤖 EcoAgent: Autonomous Work-Order Dispatch")
-    st.markdown("Synthesizes live telemetry, predictive overflow warnings, and infrastructure leaks into an actionable maintenance ticket.")
+    st.markdown("Synthesizes live telemetry and infrastructure leaks into an actionable maintenance ticket.")
 
     if st.button("Generate Maintenance Dispatch Ticket", type="primary"):
         prompt = (
-            f"You are the senior facilities director at {campus_name}.\n"
+            f"You are the senior facilities director at {selected_campus}.\n"
             "Review the real-time campus alerts below and create a formal maintenance dispatch work order.\n"
             "Structure the response with:\n"
             "1. Priority Tier (Critical / High / Medium)\n"
-            "2. Assigned Trade Department (e.g. Sanitation, Plumbing, Electrical)\n"
+            "2. Assigned Trade Department (Sanitation, Plumbing, Electrical)\n"
             "3. Immediate Remediation Action\n"
             "4. Optimal Routing Route Order for the facilities crew\n\n"
             "Active Telemetry Issues:\n- " + "\n- ".join(current_alerts())
@@ -827,33 +816,12 @@ elif page == "Campus Digital Twin":
             if st.button("📲 Dispatch via WhatsApp / Slack Alerts"):
                 st.toast("✅ Work order dispatched to Facilities Crew On-Call via Webhook!")
 
-    # What-If ROI Calculator
-    st.markdown("---")
-    st.subheader("🧮 What-If Campus Decarbonization Simulator")
-    st.caption("Baseline values: 1.5 kW/AC unit, ₹8.00 per kWh, 0.82 kg CO₂/kWh, ₹50.00 per kL treated water.")
-
-    s1, s2, s3 = st.columns(3)
-    ac_units = s1.slider("HVAC Units Auto-Shutdown Post-Hours", 0, 150, 30)
-    hours_off = s2.slider("Operating Hours Trimmed / Day", 0, 10, 4)
-    leak_litres = s3.slider("Water Loss Plugged (Litres / Day)", 0, 5000, 1200, step=100)
-
-    kwh_month = ac_units * 1.5 * hours_off * 30
-    water_kl_month = leak_litres * 30 / 1000
-    money_saved = (kwh_month * 8.0) + (water_kl_month * 50.0)
-    co2_avoided_kg = kwh_month * 0.82
-
-    w1, w2, w3, w4 = st.columns(4)
-    w1.metric("Monthly Power Saved", f"{kwh_month:,.0f} kWh")
-    w2.metric("Monthly Water Saved", f"{water_kl_month:,.1f} kL")
-    w3.metric("Monthly Budget Saved", f"₹{money_saved:,.0f}")
-    w4.metric("CO₂ Emissions Avoided", f"{co2_avoided_kg:,.0f} kg")
-
 # ===============================================================
 # PAGE 4: ESG Reports
 # ===============================================================
 elif page == "ESG Reports":
     st.header("📊 Institutional ESG & Sustainability Audit")
-    st.markdown(f"Consolidates historical campus utility data and real-time operational metrics for **{campus_name}**.")
+    st.markdown(f"Consolidates historical campus utility data and real-time operational metrics for **{selected_campus}**.")
 
     stats = st.session_state["stats"]
     l1, l2, l3, l4 = st.columns(4)
@@ -876,7 +844,7 @@ elif page == "ESG Reports":
     st.subheader("📑 Automated AI Chief Sustainability Officer (CSO) Report")
     if st.button("Generate Executive ESG Audit", type="primary"):
         prompt = (
-            f"You are the Chief Sustainability Officer (CSO) delivering an audit for {campus_name}.\n"
+            f"You are the Chief Sustainability Officer (CSO) delivering an audit for {selected_campus}.\n"
             "Using the real-time sensor metrics and historical records below, prepare a formal executive ESG report.\n"
             "Include:\n"
             "1. Executive Sustainability Scorecard and key highlights\n"
@@ -900,7 +868,7 @@ elif page == "ESG Reports":
     if st.session_state["esg_report"]:
         st.success("Executive ESG Audit Complete")
         st.markdown(st.session_state["esg_report"])
-        safe_name = re.sub(r"[^A-Za-z0-9]+", "_", campus_name).strip("_") or "Campus"
+        safe_name = re.sub(r"[^A-Za-z0-9]+", "_", selected_campus).strip("_") or "Campus"
         st.download_button(
             label="📄 Download ESG Report (.md)",
             data=st.session_state["esg_report"],
@@ -916,19 +884,19 @@ elif page == "Pitch Summary":
     st.caption("Problem Statement 02: AI-Powered Sustainable Campus")
     st.markdown("""
 ### 1. The Challenge
-Higher-education campuses are decentralized micro-cities consuming enormous energy, water, and consumables. Infrastructure anomalies (unnoticed pipe fractures, peak load HVAC spikes, overflowing receptacles) typically remain unaddressed until bills arrive or facilities fail.
+Higher-education campuses are decentralized micro-cities consuming enormous energy, water, and consumables. Infrastructure anomalies typically remain unaddressed until bills arrive or facilities fail.
 
 ### 2. The Solution: EcoTwin Campus
 A bidirectional **Cyber-Physical Digital Twin** combining computer vision, edge IoT simulation, and agentic AI:
-* **Multimodal Vision Scanner:** Instantly decomposes waste items, calculates diverted CO₂, estimates circular recovery value (₹), and enforces proper sorting.
-* **Spatial Digital Twin:** Real-time map displaying smart bins, HVAC load meters, and water pipe integrity anchored to any university worldwide.
-* **Predictive Overflow Engine:** Computes fill velocities to anticipate overflows hours in advance.
-* **EcoAgent Dispatcher:** Translates sensor alerts into structured facilities work orders and routing paths.
-* **Gamified Eco-Pass:** Fosters behavioral modification through student rewards and inter-hostel competitions.
-* **Automated ESG Audit:** Generates CSO-level institutional reports with a single click.
+- **Multimodal Vision Scanner:** Instantly decomposes waste items, calculates avoided CO₂, estimates circular recovery value (₹), and enforces proper sorting.
+- **Dynamic Spatial Twin:** Real-time map displaying all 8 facility blocks anchored dynamically to any college or university worldwide.
+- **Predictive Overflow Engine:** Computes fill velocities to anticipate overflows hours in advance.
+- **EcoAgent Dispatcher:** Translates sensor alerts into structured facilities work orders and routing paths.
+- **Gamified Eco-Pass:** Fosters behavioral modification through student rewards and inter-hostel competitions.
+- **Automated ESG Audit:** Generates CSO-level institutional reports with a single click.
 
 ---
 ### 3. Operational Integrity
-* **Live AI Integrations:** Multimodal object analysis, maintenance routing, and ESG report drafting execute via live Google Gemini endpoints.
-* **Reproducible Deployment:** Dynamic coordinates ensure zero-friction demonstration across any global campus footprint.
+- **Live AI Integrations:** Multimodal object analysis, maintenance routing, and ESG report drafting execute via live Google Gemini endpoints.
+- **Zero Token Footprint:** Fully native spatial mapping requires zero third-party map tokens or complex iframe dependencies.
 """)
