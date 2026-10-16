@@ -13,7 +13,7 @@ from google import genai
 from google.genai import types
 
 st.set_page_config(
-    page_title="EcoTwin Campus",
+    page_title="CampusSustain Twin: AI-Powered Sustainable Campus",
     page_icon="🌱",
     layout="wide",
     initial_sidebar_state="expanded",
