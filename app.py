@@ -1,11 +1,23 @@
 import os
+import re
 import json
+from html import escape
 import time
+import requests
 import pandas as pd
 import streamlit as st
 from PIL import Image
 from google import genai
 from google.genai import types
+
+# Needed only for the "click on the map" campus picker:
+#   pip install streamlit-folium folium
+try:
+    import folium
+    from streamlit_folium import st_folium
+    HAS_FOLIUM = True
+except ImportError:
+    HAS_FOLIUM = False
 
 st.set_page_config(
     page_title="EcoTwin Campus",
@@ -13,6 +25,50 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ---------------------------------------------------------------
+# Intro screen. Shows the track name for a few seconds, once per
+# session, then drops into the real app.
+# ---------------------------------------------------------------
+SPLASH_CSS = """
+<style>
+[data-testid="stSidebar"], [data-testid="stHeader"], [data-testid="stToolbar"] { display: none; }
+.stApp { background: radial-gradient(circle at 30% 20%, #12332a 0%, #0b1220 60%); }
+.splash-wrap { text-align: center; padding-top: 14vh; }
+.splash-label { color: #34d399; letter-spacing: 4px; font-size: 0.9rem; text-transform: uppercase; }
+.splash-title { color: #f8fafc; font-size: 3.2rem; font-weight: 800; margin: 14px 0 6px 0; line-height: 1.15; }
+.splash-sub { color: #94a3b8; font-size: 1.15rem; margin-bottom: 26px; }
+.splash-tag { display: inline-block; margin: 4px; padding: 5px 14px; border-radius: 20px;
+              border: 1px solid #34d399; color: #a7f3d0; font-size: 0.85rem; }
+.splash-load { color: #64748b; font-size: 0.85rem; margin-top: 34px; }
+</style>
+"""
+
+SPLASH_HTML = """
+<div class="splash-wrap">
+<div class="splash-label">Problem Statement 02</div>
+<div class="splash-title">AI-Powered Sustainable Campus</div>
+<div class="splash-sub">EcoTwin: a digital twin that sees the waste, water and energy problems on campus and acts on them</div>
+<span class="splash-tag">Computer Vision</span>
+<span class="splash-tag">Digital Twin</span>
+<span class="splash-tag">GenAI</span>
+<span class="splash-tag">Campus</span>
+<div class="splash-load">Loading the command center...</div>
+</div>
+"""
+
+if not st.session_state.get("splash_done"):
+    st.markdown(SPLASH_CSS, unsafe_allow_html=True)
+    holder = st.empty()
+    with holder.container():
+        st.markdown(SPLASH_HTML, unsafe_allow_html=True)
+        bar = st.progress(0)
+        for i in range(100):
+            time.sleep(0.03)  # about 3 seconds in total
+            bar.progress(i + 1)
+    st.session_state["splash_done"] = True
+    holder.empty()
+    st.rerun()
 
 # ---------------------------------------------------------------
 # Gemini setup
@@ -62,6 +118,65 @@ def to_number(x):
         return 0.0
 
 
+@st.cache_data(show_spinner=False, ttl=3600)
+def find_places(query):
+    """Look a place up by name using OpenStreetMap's free search (Nominatim).
+    Returns a list of (full name, latitude, longitude). If the plain query finds
+    nothing, it tries again with ', India' added."""
+    for attempt in (query, f"{query}, India"):
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": attempt, "format": "json", "limit": 5},
+            headers={"User-Agent": "EcoTwinCampus-hackathon/1.0",
+                     "Accept-Language": "en"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        results = resp.json()
+        if results:
+            return [(item["display_name"], float(item["lat"]), float(item["lon"]))
+                    for item in results]
+    return []
+
+
+# ---------------------------------------------------------------
+# Light and dark theme. Streamlit has its own theme switch in the
+# Settings menu, but this lets us flip it from the sidebar.
+# ---------------------------------------------------------------
+DARK_CSS = """
+<style>
+.block-container { padding-top: 3.5rem !important; }
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] { background-color: #0e1117; }
+[data-testid="stSidebar"], [data-testid="stSidebar"] > div:first-child { background-color: #161b22; }
+h1, h2, h3, h4, h5, h6, label, .stMarkdown, .stMarkdown p, .stMarkdown li,
+[data-testid="stMetricLabel"], [data-testid="stMetricValue"], [data-testid="stCaptionContainer"],
+[data-testid="stWidgetLabel"] p, [data-testid="stSidebar"] p { color: #e6edf3 !important; }
+input, textarea, [data-baseweb="select"] > div, [data-baseweb="input"] > div {
+    background-color: #21262d !important; color: #e6edf3 !important; }
+.stButton > button, .stDownloadButton > button {
+    background-color: #21262d; color: #e6edf3; border: 1px solid #3b434d; }
+.stButton > button:hover, .stDownloadButton > button:hover { border-color: #34d399; color: #34d399; }
+table, th, td { color: #e6edf3 !important; border-color: #30363d !important; }
+</style>
+"""
+
+LIGHT_CSS = """
+<style>
+.block-container { padding-top: 3.5rem !important; }
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] { background-color: #ffffff; }
+[data-testid="stSidebar"], [data-testid="stSidebar"] > div:first-child { background-color: #f3f6f4; }
+h1, h2, h3, h4, h5, h6, label, .stMarkdown, .stMarkdown p, .stMarkdown li,
+[data-testid="stMetricLabel"], [data-testid="stMetricValue"], [data-testid="stCaptionContainer"],
+[data-testid="stWidgetLabel"] p, [data-testid="stSidebar"] p { color: #1f2937 !important; }
+input, textarea, [data-baseweb="select"] > div, [data-baseweb="input"] > div {
+    background-color: #ffffff !important; color: #1f2937 !important; }
+.stButton > button, .stDownloadButton > button {
+    background-color: #ffffff; color: #1f2937; border: 1px solid #cbd5d1; }
+.stButton > button:hover, .stDownloadButton > button:hover { border-color: #059669; color: #059669; }
+table, th, td { color: #1f2937 !important; border-color: #e5e7eb !important; }
+</style>
+"""
+
 # ---------------------------------------------------------------
 # Shared state. Every page reads and writes these.
 # ---------------------------------------------------------------
@@ -96,11 +211,22 @@ BIN_TO_NODE = {
     "General Waste": "Library Smart Bin",
 }
 
-NODE_COORDS = {
-    "Library Smart Bin": (12.9716, 77.5946),
-    "Cafeteria Recycling Hub": (12.9725, 77.5950),
-    "Science Block E-Waste Depot": (12.9745, 77.5920),
-    "Hostel Battery Bin": (12.9708, 77.5938),
+# Where each node sits compared with the campus centre (degrees of lat, lon).
+# Whatever campus is picked, the nodes are laid out around its centre.
+NODE_OFFSETS = {
+    "Library Smart Bin": (0.0000, 0.0000),
+    "Cafeteria Recycling Hub": (0.0009, 0.0004),
+    "Science Block E-Waste Depot": (0.0029, -0.0026),
+    "Hostel Battery Bin": (-0.0008, -0.0008),
+    "Hostel Block A Water Sensor": (-0.0016, -0.0016),
+    "Main Building Energy Meter": (0.0014, 0.0014),
+}
+
+# Ready-made campuses for the picker. "Custom campus" lets the user type their own.
+CAMPUS_PRESETS = {
+    "Demo campus (Bengaluru)": (12.9716, 77.5946),
+    "IISc Bengaluru": (13.0219, 77.5671),
+    "IIT Madras, Chennai": (12.9916, 80.2337),
 }
 
 # How fast each bin fills, in percent per hour. In a real deployment this would
@@ -113,6 +239,11 @@ BIN_FILL_RATE = {
 }
 
 HOSTELS = ["Hostel A", "Hostel B", "Hostel C", "Hostel D", "Day Scholars"]
+
+
+def node_position(name, centre):
+    d_lat, d_lon = NODE_OFFSETS[name]
+    return centre[0] + d_lat, centre[1] + d_lon
 
 
 def fill_status(level):
@@ -177,10 +308,131 @@ def hostel_table():
     return table.sort_values("Points", ascending=False).reset_index(drop=True)
 
 
+def status_colour(status):
+    """Dot colour on the map: red = act now, orange = soon, green = fine."""
+    s = status.lower()
+    if "overflow" in s or "leak" in s:
+        return [220, 60, 60]
+    if "filling" in s or "high power" in s:
+        return [245, 158, 11]
+    return [34, 197, 94]
+
+
+def eco_score():
+    """One number for campus health. Drops with problems, rises with scans."""
+    score = 100
+    for level in st.session_state["bin_levels"].values():
+        if level >= 90:
+            score -= 12
+        elif level >= 70:
+            score -= 6
+    if st.session_state["leak_active"]:
+        score -= 15
+    score -= 8  # the energy meter alert is always on in this prototype
+    score += min(10, st.session_state["stats"]["items"] * 2)
+    return max(0, min(100, score))
+
+
+def render_banner():
+    """Strip across the top of every page with the track, campus and live status."""
+    levels = st.session_state["bin_levels"]
+    attention = sum(1 for v in levels.values() if v >= 70)
+    chips = [
+        f"Eco score {eco_score()}/100",
+        f"{attention} bin(s) need attention",
+        "Water leak active" if st.session_state["leak_active"] else "No water leaks",
+        f"{st.session_state['stats']['items']} items scanned",
+    ]
+    chip_style = ("display:inline-block;margin:2px 6px 2px 0;padding:3px 12px;"
+                  "border-radius:14px;background:rgba(255,255,255,0.16);"
+                  "color:#ffffff;font-size:0.82rem;")
+    chip_html = "".join(f'<span style="{chip_style}">{escape(c)}</span>' for c in chips)
+    banner = (
+        '<div style="background:linear-gradient(90deg,#065f46,#0f766e);'
+        'border-radius:12px;padding:14px 20px;margin-bottom:14px;">'
+        '<div style="color:#a7f3d0;font-size:0.72rem;letter-spacing:3px;'
+        'text-transform:uppercase;">Problem Statement 02 | AI-Powered Sustainable Campus</div>'
+        f'<div style="color:#ffffff;font-size:1.35rem;font-weight:700;margin:4px 0 8px 0;">'
+        f'EcoTwin | {escape(campus_name)}</div>'
+        f'<div>{chip_html}</div></div>'
+    )
+    st.markdown(banner, unsafe_allow_html=True)
+
+
 # ---------------------------------------------------------------
-# Sidebar
+# Sidebar: campus, theme, navigation
 # ---------------------------------------------------------------
 st.sidebar.title("EcoTwin Navigation")
+
+st.sidebar.subheader("Campus")
+SEARCH_OPTION = "Search by place name"
+PICK_OPTION = "Click on the map"
+MANUAL_OPTION = "Enter coordinates manually"
+campus_choice = st.sidebar.selectbox(
+    "Which campus is this?",
+    list(CAMPUS_PRESETS.keys()) + [SEARCH_OPTION, PICK_OPTION, MANUAL_OPTION],
+)
+DEFAULT_CENTRE = CAMPUS_PRESETS["Demo campus (Bengaluru)"]
+
+if campus_choice == SEARCH_OPTION:
+    query = st.sidebar.text_input(
+        "College or place name", placeholder="e.g. RV College of Engineering, Bengaluru"
+    )
+    if st.sidebar.button("Find place"):
+        if not query.strip():
+            st.sidebar.warning("Type a place name first.")
+        else:
+            try:
+                found = find_places(query.strip())
+                st.session_state["place_results"] = found
+                if not found:
+                    st.sidebar.warning(
+                        "No match found. Try adding the city, or use the "
+                        "'Click on the map' option instead."
+                    )
+            except Exception as e:
+                st.sidebar.error(f"Could not reach the map service: {e}")
+
+    matches = st.session_state.get("place_results", [])
+    if matches:
+        labels = [m[0] for m in matches]
+        picked_label = st.sidebar.selectbox("Pick the right match", labels)
+        _, lat, lon = matches[labels.index(picked_label)]
+        campus_name = picked_label.split(",")[0].strip()
+        campus_centre = (lat, lon)
+        st.session_state["search_centre"] = campus_centre
+        st.sidebar.caption(f"Found at {lat:.5f}, {lon:.5f}")
+    else:
+        campus_name = "Demo campus (Bengaluru)"
+        campus_centre = DEFAULT_CENTRE
+        st.sidebar.caption("Search above to move the map. Showing the demo campus for now.")
+elif campus_choice == PICK_OPTION:
+    campus_name = st.sidebar.text_input(
+        "Campus name", value="My College", key="picked_name"
+    ).strip() or "My College"
+    picked_point = st.session_state.get("picked_point")
+    if not HAS_FOLIUM:
+        st.sidebar.error("Map clicking needs this install: pip install streamlit-folium folium")
+    if picked_point:
+        campus_centre = picked_point
+        st.sidebar.caption(f"Picked {picked_point[0]:.5f}, {picked_point[1]:.5f}")
+    else:
+        campus_centre = DEFAULT_CENTRE
+        st.sidebar.caption("Click your college on the map at the top of the page.")
+elif campus_choice == MANUAL_OPTION:
+    campus_name = st.sidebar.text_input("Campus name", value="My College").strip() or "My College"
+    campus_lat = st.sidebar.number_input("Latitude", value=12.9716, min_value=-90.0,
+                                         max_value=90.0, format="%.5f")
+    campus_lon = st.sidebar.number_input("Longitude", value=77.5946, min_value=-180.0,
+                                         max_value=180.0, format="%.5f")
+    campus_centre = (campus_lat, campus_lon)
+else:
+    campus_name = campus_choice
+    campus_centre = CAMPUS_PRESETS[campus_choice]
+
+theme_mode = st.sidebar.radio("Theme", ["Light", "Dark"], index=1, horizontal=True)
+st.markdown(DARK_CSS if theme_mode == "Dark" else LIGHT_CSS, unsafe_allow_html=True)
+
 page = st.sidebar.radio(
     "Go to",
     [
@@ -192,12 +444,37 @@ page = st.sidebar.radio(
     ],
 )
 
+if st.sidebar.button("Replay intro"):
+    st.session_state["splash_done"] = False
+    st.rerun()
+
+render_banner()
+
+# Click-to-pick map: only shown when the "Click on the map" option is selected
+if campus_choice == PICK_OPTION and HAS_FOLIUM:
+    already = st.session_state.get("picked_point")
+    with st.expander("Click your college on the map", expanded=already is None):
+        st.caption("Zoom in, then click on your college. A marker will show where you clicked.")
+        start_at = already or st.session_state.get("search_centre") or DEFAULT_CENTRE
+        pick_map = folium.Map(location=list(start_at), zoom_start=16 if already else 12,
+                              tiles="OpenStreetMap")
+        if already:
+            folium.Marker(list(already), tooltip=campus_name).add_to(pick_map)
+        result = st_folium(pick_map, height=420, use_container_width=True,
+                           key="campus_picker", returned_objects=["last_clicked"])
+        clicked = result.get("last_clicked") if result else None
+        if clicked:
+            new_point = (clicked["lat"], clicked["lng"])
+            if st.session_state.get("picked_point") != new_point:
+                st.session_state["picked_point"] = new_point
+                st.rerun()
+
 # ===============================================================
 # Overview
 # ===============================================================
 if page == "Overview":
     st.title("EcoTwin Campus Command Center")
-    st.caption("Live sustainability monitoring for the whole campus")
+    st.caption(f"{campus_name}  |  Live sustainability monitoring")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Solar generation", "420 kW", "+12%")
@@ -394,7 +671,7 @@ elif page == "Smart Recycling Scanner":
 # ===============================================================
 elif page == "Campus Digital Twin":
     st.header("Campus Digital Twin")
-    st.markdown("Live view of bins, water and energy nodes across the campus.")
+    st.markdown(f"Live view of bins, water and energy nodes across {campus_name}.")
 
     levels = st.session_state["bin_levels"]
     leak = st.session_state["leak_active"]
@@ -406,20 +683,57 @@ elif page == "Campus Digital Twin":
               "Hostel Block A" if leak else "All clear", delta_color="inverse")
     c3.metric("Items scanned today", st.session_state["stats"]["items"])
 
-    # Build the node table from live state
+    # Build the node table from live state, placed around the chosen campus centre
     rows = []
     for name, level in levels.items():
-        lat, lon = NODE_COORDS[name]
+        lat, lon = node_position(name, campus_centre)
         rows.append({"name": name, "lat": lat, "lon": lon,
                      "status": f"{fill_status(level)} ({level}% full)"})
-    rows.append({"name": "Hostel Block A Water Sensor", "lat": 12.9700, "lon": 77.5930,
+    lat, lon = node_position("Hostel Block A Water Sensor", campus_centre)
+    rows.append({"name": "Hostel Block A Water Sensor", "lat": lat, "lon": lon,
                  "status": "Leak detected" if leak else "Normal"})
-    rows.append({"name": "Main Building Energy Meter", "lat": 12.9730, "lon": 77.5960,
+    lat, lon = node_position("Main Building Energy Meter", campus_centre)
+    rows.append({"name": "Main Building Energy Meter", "lat": lat, "lon": lon,
                  "status": "High power usage"})
     node_df = pd.DataFrame(rows)
 
+    node_df["colour"] = node_df["status"].apply(status_colour)
+    node_df["hex"] = node_df["colour"].apply(lambda c: "#%02x%02x%02x" % tuple(c))
+
     st.subheader("Campus map")
-    st.map(node_df, latitude="lat", longitude="lon", size=60)
+    try:
+        import pydeck as pdk
+
+        layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=node_df,
+            get_position="[lon, lat]",
+            get_fill_color="colour",
+            get_line_color=[255, 255, 255],
+            get_radius=35,
+            radius_min_pixels=9,
+            line_width_min_pixels=2,
+            stroked=True,
+            pickable=True,
+        )
+        view = pdk.ViewState(latitude=campus_centre[0], longitude=campus_centre[1],
+                             zoom=15.5, pitch=0)
+        style = pdk.map_styles.CARTO_DARK if theme_mode == "Dark" else pdk.map_styles.CARTO_LIGHT
+        st.pydeck_chart(pdk.Deck(
+            layers=[layer],
+            initial_view_state=view,
+            map_provider="carto",
+            map_style=style,
+            tooltip={"text": "{name}\n{status}"},
+        ))
+    except Exception:
+        # fall back to the basic map if pydeck is not available
+        st.map(node_df, latitude="lat", longitude="lon", color="hex", size=40)
+    st.caption(
+        "Green is normal, orange needs attention soon, red needs action now. "
+        "Hover over a dot to see which node it is. Node positions are simulated "
+        "around the campus centre."
+    )
 
     st.subheader("Node status")
     st.dataframe(node_df[["name", "status"]], use_container_width=True, hide_index=True)
@@ -485,7 +799,7 @@ elif page == "Campus Digital Twin":
     st.markdown("Reads the current alerts and forecasts and writes a work order for the facilities team.")
     if st.button("Generate dispatch ticket"):
         prompt = (
-            "You are a facilities coordinator at a university. Write a short maintenance "
+            f"You are a facilities coordinator at {campus_name}. Write a short maintenance "
             "dispatch ticket for the issues below. For each issue give a priority "
             "(High, Medium or Low), the team to send, and a one-line action. "
             "End with a suggested order of visits.\n\nCurrent issues:\n- "
@@ -531,7 +845,7 @@ elif page == "Campus Digital Twin":
 # ===============================================================
 elif page == "ESG Reports":
     st.header("ESG Reports and Sustainability Insights")
-    st.markdown("Turns the live campus data into an executive report with recommendations.")
+    st.markdown(f"Turns the live data for {campus_name} into an executive report with recommendations.")
 
     stats = st.session_state["stats"]
     st.subheader("Live numbers from the recycling scanner")
@@ -555,7 +869,7 @@ elif page == "ESG Reports":
     st.subheader("AI-generated report")
     if st.button("Generate ESG audit report"):
         prompt = (
-            "You are the Chief Sustainability Officer of a university campus. "
+            f"You are the Chief Sustainability Officer of {campus_name}. "
             "Using the live data below, write a professional executive ESG report with: "
             "1. An executive summary of campus sustainability health. "
             "2. Critical areas needing immediate action (water, energy, waste). "
@@ -579,10 +893,11 @@ elif page == "ESG Reports":
     if st.session_state["esg_report"]:
         st.success("Report ready")
         st.markdown(st.session_state["esg_report"])
+        safe_name = re.sub(r"[^A-Za-z0-9]+", "_", campus_name).strip("_") or "Campus"
         st.download_button(
             label="Download report (Markdown)",
             data=st.session_state["esg_report"],
-            file_name="EcoTwin_Campus_ESG_Report.md",
+            file_name=f"EcoTwin_{safe_name}_ESG_Report.md",
             mime="text/markdown",
         )
 
@@ -591,6 +906,7 @@ elif page == "ESG Reports":
 # ===============================================================
 elif page == "Pitch Summary":
     st.header("EcoTwin Campus: Summary")
+    st.caption("Problem Statement 02: AI-Powered Sustainable Campus")
     st.markdown("""
 **The problem.** Campuses lose energy, water and recyclable material every day, and
 nobody sees it until it is a bigger problem.
@@ -601,7 +917,8 @@ sensor data, and uses generative AI to turn that data into action.
 **How it works**
 - **Smart Recycling Scanner:** a photo of any item gives its category, a breakdown of its
   parts, the right bin, estimated CO2 saved and its recovery value.
-- **Digital Twin:** bin levels, water and energy nodes on a live map. Scans update the bins.
+- **Digital Twin:** bin levels, water and energy nodes on a live map that can be set to any
+  campus. Scans update the bins.
 - **Overflow forecast:** predicts when each bin will overflow, so collection can be planned
   before the bin is full.
 - **EcoAgent:** reads the live alerts and forecasts and writes the maintenance ticket.
