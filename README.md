@@ -1,83 +1,105 @@
-# EcoTwin Campus
+# 🌱 CampusSustain Twin: AI-Powered Sustainable Campus
 
-AI-powered campus sustainability dashboard built with Streamlit and Google Gemini. It combines a campus digital twin, a smart recycling scanner (Gemini Vision), bin overflow tracking, and AI-generated ESG reports.
+**CampusSustain Twin** is a bidirectional **Cyber-Physical Digital Twin** designed to solve *Problem Statement 02: AI-Powered Sustainable Campus*. By combining computer vision, edge IoT simulation, and agentic AI, the platform acts as a digital twin command center that detects waste, water, and energy bottlenecks and triggers automated operational responses.
 
-## Features
+---
 
-- **Overview:** live campus metrics, energy profile, and activity log
-- **Smart Recycling Scanner:** upload or capture an item photo and get its category, correct bin, CO2 saved, and a disposal tip
-- **Campus Digital Twin:** facility status and map for the selected college
-- **ESG Reports:** AI-written executive sustainability report you can download
-- **Pitch Summary:** problem, solution, and key modules
+## 🚀 Core Modules & Features
 
-> Sensor values in this prototype are simulated.
+*   **📸 Multimodal Smart Recycling Scanner:** Uses Google Gemini Vision (`gemini-3.8-flash`) to analyze discarded objects or electronic gadgets. It breaks items down into components, checks bin routing, calculates avoided carbon emissions (CO₂e), estimates scrap value in INR (₹), and provides guidance tips in English and Hindi.
+*   **🌐 Campus Digital Twin & Spatial Grounds:** Uses live geocoding via OpenStreetMap Nominatim to map 8 real infrastructure blocks surrounding **any typed college or university worldwide** without third-party API token limitations.
+*   **📈 Predictive Overflow Forecasting:** Computes real-time telemetry velocities for smart bins to estimate hours remaining until capacity limits are breached.
+*   **🛠️ Operational Simulation Engine:** Fast-forwards time progression, triggers/resolves plumbing pipe water anomalies, or dispatches a janitorial sweep to dynamically reset active sensor states.
+*   **🤖 EcoAgent Autonomous Ticket Dispatcher:** Processes active infrastructure errors and synthesizes them into actionable facilities maintenance tickets that can be exported as text or dispatched via Slack/WhatsApp webhooks.
+*   **🎓 Student Eco-Pass Gamification:** Fosters behavior modification with an individual tier ranking system and an interactive inter-hostel sustainability competition league.
+*   **📊 Institutional ESG Audit Report:** Compiles real-time metrics and historical Scope 1, 2, and 3 data trends into downloadable, executive-ready Markdown (`.md`) reports.
 
-## Requirements
+---
 
-- Python **3.11, 3.12 or 3.13** (3.14 is too new for some packages and can cause NumPy errors)
-- A Gemini API key from [Google AI Studio](https://aistudio.google.com)
+## 🛠️ Tech Stack
 
-## Setup (Windows PowerShell)
+*   **Frontend UI:** Streamlit (Responsive wide-layout interface)
+*   **Language Engine:** Python 3.x
+*   **AI Engine:** Google GenAI SDK (`gemini-3.8-flash` model endpoint)
+*   **Mapping & Data Processing:** OpenStreetMap Nominatim API, Pandas, Requests
+*   **Image Handling:** Pillow (PIL)
 
-1. **Clone the repo**
+---
 
-```powershell
-   git clone https://github.com/shashwathi16/ecotwin-campus.git
-   cd ecotwin-campus
+## 💻 Installation & Local Setup
+
+### 1. Clone the Project
+```bash
+git clone https://github.com
+cd campussustain-twin
 ```
 
-2. **Create a virtual environment** (change `3.11` if you use another version)
+### 2. Set Up Your Virtual Environment
+```bash
+# For Windows
+python -m venv venv
+.\venv\Scripts\activate
 
-```powershell
-   py -3.11 -m venv venv
+# For macOS/Linux
+python3 -m venv venv
+source venv/bin/activate
 ```
 
-3. **Activate it**
-
-```powershell
-   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-   .\venv\Scripts\Activate.ps1
-   python --version
+### 3. Create the Dependencies File
+Create a file named `requirements.txt` in your project folder and add the following contents:
+```text
+streamlit
+pandas
+requests
+pillow
+google-genai
+```
+Then run the installation command:
+```bash
+pip install -r requirements.txt
 ```
 
-   The prompt should start with `(venv)`.
+### 4. Provide the Google Gemini API Key
+The app looks for your Gemini API key in your system environment variables or Streamlit secrets. Configure it in one of these ways:
 
-4. **Install the dependencies**
+*   **Option A: Terminal (Run before starting the app)**
+    ```bash
+    # Windows PowerShell
+    $env:GEMINI_API_KEY="your_actual_api_key_here"
 
-```powershell
-   python -m pip install --upgrade pip
-   pip install -r requirements.txt
+    # macOS/Linux Terminal
+    export GEMINI_API_KEY="your_actual_api_key_here"
+    ```
+*   **Option B: Streamlit Secrets**
+    Create a folder named `.streamlit` and add a file named `secrets.toml` inside it:
+    ```toml
+    GEMINI_API_KEY = "your_actual_api_key_here"
+    ```
+
+---
+
+## 🏃‍♂️ Running the App
+
+Launch the digital twin server by running:
+```bash
+streamlit run app.py
+```
+Open the local address provided in your terminal (typically `http://localhost:8501`) inside any web browser to view the command dashboard.
+
+---
+
+## 📁 Repository View
+
+```text
+├── .streamlit/
+│   └── secrets.toml          # Optional local secrets configurations
+├── app.py                    # Core Streamlit system source code
+├── requirements.txt          # Python application prerequisites
+└── README.md                 # Project operational documentation
 ```
 
-5. **Add your Gemini API key** (saved permanently, no need to set it every time)
+---
 
-```powershell
-   mkdir .streamlit
-   Set-Content -Path .streamlit\secrets.toml -Value 'GEMINI_API_KEY = "your-key-here"'
-```
+## 📄 Licensing
 
-   Replace `your-key-here` with your real key, and keep the quotes exactly as shown.
-
-6. **Run the app**
-
-```powershell
-   python -m streamlit run app.py
-```
-
-   The app opens in your browser at `http://localhost:8501`.
-
-## Running it again later
-
-Open PowerShell in the project folder, then:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\venv\Scripts\Activate.ps1
-python -m streamlit run app.py
-```
-
-## Configuration
-
-| Setting | Where | Notes |
-|---|---|---|
-| `GEMINI_API_KEY` | `.streamlit/secrets.toml` or environment variable | Required
+Distributed under the **MIT License**. Open source for academic development, hackathon environments, and institutional sustainability labs.
