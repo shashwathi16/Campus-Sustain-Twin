@@ -13,11 +13,13 @@ from google import genai
 from google.genai import types
 
 st.set_page_config(
-    page_title="CampusSustain Twin: AI-Powered Sustainable Campus",
+    page_title="Campus Sustain: AI-Powered Sustainable Campus",
     page_icon="🌱",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+st.title("🌱 Campus Sustain")
+st.write("Welcome to the AI-Powered Sustainable Campus Dashboard!")
 
 # ---------------------------------------------------------------
 # Splash Screen (Runs once per session)
@@ -40,7 +42,7 @@ SPLASH_HTML = """
 <div class="splash-wrap">
 <div class="splash-label">Problem Statement 02</div>
 <div class="splash-title">AI-Powered Sustainable Campus</div>
-<div class="splash-sub">EcoTwin: a digital twin that sees waste, water, and energy bottlenecks and triggers automated actions</div>
+<div class="splash-sub">Campus Sustain: a digital twin that sees waste, water, and energy bottlenecks and triggers automated actions</div>
 <span class="splash-tag">Computer Vision</span>
 <span class="splash-tag">Campus Digital Twin</span>
 <span class="splash-tag">Gemini Multimodal</span>
@@ -73,8 +75,14 @@ if not api_key:
         api_key = None
 
 client = genai.Client(api_key=api_key) if api_key else None
-# Updated model name per API error response instruction
-MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+DEFAULT_MODEL_NAME = "gemini-2.5-flash"
+FALLBACK_MODEL_NAMES = [
+    os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL_NAME,
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+]
+MODEL_NAME = FALLBACK_MODEL_NAMES[0]
 
 if not api_key:
     st.sidebar.warning("⚠️ GEMINI_API_KEY missing. Set it in your terminal via $env:GEMINI_API_KEY.")
@@ -89,16 +97,30 @@ def ask_gemini(contents, as_json=False):
     if as_json:
         config = types.GenerateContentConfig(response_mime_type="application/json")
 
+    last_error = None
     for attempt in range(4):
-        try:
-            return client.models.generate_content(
-                model=MODEL_NAME, contents=contents, config=config
-            )
-        except Exception as err:
-            if "503" in str(err) and attempt < 3:
-                time.sleep(2.5)
-            else:
+        for model_name in dict.fromkeys(FALLBACK_MODEL_NAMES):
+            try:
+                return client.models.generate_content(
+                    model=model_name, contents=contents, config=config
+                )
+            except Exception as err:
+                last_error = err
+                msg = str(err).lower()
+                if "not found" in msg or "model" in msg and "not" in msg:
+                    continue
+                if "503" in str(err) and attempt < 3:
+                    time.sleep(2.5)
+                    break
+                if "429" in str(err) and attempt < 3:
+                    time.sleep(2.5)
+                    break
                 raise
+        if last_error and ("503" in str(last_error) or "429" in str(last_error)) and attempt < 3:
+            continue
+        break
+
+    raise last_error
 
 
 def safe_json_loads(text):
@@ -139,7 +161,7 @@ def get_coordinates_for_college(college_name):
     try:
         url = "https://nominatim.openstreetmap.org/search"
         params = {"q": college_name, "format": "json", "limit": 1}
-        headers = {"User-Agent": "EcoTwinCampusApp/2.0"}
+        headers = {"User-Agent": "CampusSustainApp/2.0"}
         response = requests.get(url, params=params, headers=headers, timeout=5)
         data = response.json()
         if data and len(data) > 0:
@@ -385,7 +407,7 @@ def on_custom_change():
 # ---------------------------------------------------------------
 # Sidebar: College Selection, Theme & Navigation
 # ---------------------------------------------------------------
-st.sidebar.title("🌿 EcoTwin Hub")
+st.sidebar.title("🌿 Campus Sustain")
 
 st.sidebar.subheader("Select / Type Your College")
 CAMPUS_SHORTCUTS = [
@@ -463,7 +485,7 @@ def render_banner():
         '<div style="color:#a7f3d0;font-size:0.75rem;letter-spacing:2px;'
         'text-transform:uppercase;font-weight:600;">Problem Statement 02 | AI-Powered Sustainable Campus</div>'
         f'<div style="color:#ffffff;font-size:1.4rem;font-weight:700;margin:4px 0 8px 0;">'
-        f'EcoTwin Command Center | {escape(selected_campus)}</div>'
+        f'Campus Sustain Command Center | {escape(selected_campus)}</div>'
         f'<div>{chip_html}</div></div>'
     )
     st.markdown(banner, unsafe_allow_html=True)
@@ -474,7 +496,7 @@ render_banner()
 # PAGE 1: Overview
 # ===============================================================
 if page == "Overview":
-    st.title("EcoTwin Command Dashboard")
+    st.title("Campus Sustain Dashboard")
     st.caption(f"Real-time telemetry and resource performance for {selected_campus}")
 
     c_solar, c_load, c_carbon, c_leak_state, c_bins = get_campus_profile(selected_campus)
@@ -809,7 +831,7 @@ elif page == "Campus Digital Twin":
             st.download_button(
                 "📥 Export Work Order (.txt)",
                 data=st.session_state["dispatch_ticket"],
-                file_name="EcoTwin_Dispatch_WorkOrder.txt",
+                file_name="CampusSustain_Dispatch_WorkOrder.txt",
                 mime="text/plain",
             )
         with dt_col2:
@@ -872,7 +894,7 @@ elif page == "ESG Reports":
         st.download_button(
             label="📄 Download ESG Report (.md)",
             data=st.session_state["esg_report"],
-            file_name=f"EcoTwin_{safe_name}_ESG_Audit.md",
+            file_name=f"CampusSustain_{safe_name}_ESG_Audit.md",
             mime="text/markdown",
         )
 
@@ -886,7 +908,7 @@ elif page == "Pitch Summary":
 ### 1. The Challenge
 Higher-education campuses are decentralized micro-cities consuming enormous energy, water, and consumables. Infrastructure anomalies typically remain unaddressed until bills arrive or facilities fail.
 
-### 2. The Solution: EcoTwin Campus
+### 2. The Solution: Campus Sustain
 A bidirectional **Cyber-Physical Digital Twin** combining computer vision, edge IoT simulation, and agentic AI:
 - **Multimodal Vision Scanner:** Instantly decomposes waste items, calculates avoided CO₂, estimates circular recovery value (₹), and enforces proper sorting.
 - **Dynamic Spatial Twin:** Real-time map displaying all 8 facility blocks anchored dynamically to any college or university worldwide.

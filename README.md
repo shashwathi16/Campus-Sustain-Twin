@@ -1,12 +1,12 @@
-# 🌱 CampusSustain Twin: AI-Powered Sustainable Campus
+# 🌱 Campus Sustain: AI-Powered Sustainable Campus
 
-**CampusSustain Twin** is a bidirectional **Cyber-Physical Digital Twin** designed to solve *Problem Statement 02: AI-Powered Sustainable Campus*. By combining computer vision, edge IoT simulation, and agentic AI, the platform acts as a digital twin command center that detects waste, water, and energy bottlenecks and triggers automated operational responses.
+**Campus Sustain** is a bidirectional **Cyber-Physical Digital Twin** designed to solve *Problem Statement 02: AI-Powered Sustainable Campus*. By combining computer vision, edge IoT simulation, and agentic AI, the platform acts as a digital twin command center that detects waste, water, and energy bottlenecks and triggers automated operational responses.
 
 ---
 
 ## 🚀 Core Modules & Features
 
-*   **📸 Multimodal Smart Recycling Scanner:** Uses Google Gemini Vision (`gemini-3.8-flash`) to analyze discarded objects or electronic gadgets. It breaks items down into components, checks bin routing, calculates avoided carbon emissions (CO₂e), estimates scrap value in INR (₹), and provides guidance tips in English and Hindi.
+*   **📸 Multimodal Smart Recycling Scanner:** Uses Google Gemini Vision (`gemini-2.5-flash` by default, with graceful fallback to supported Gemini models) to analyze discarded objects or electronic gadgets. It breaks items down into components, checks bin routing, calculates avoided carbon emissions (CO₂e), estimates scrap value in INR (₹), and provides guidance tips in English and Hindi.
 *   **🌐 Campus Digital Twin & Spatial Grounds:** Uses live geocoding via OpenStreetMap Nominatim to map 8 real infrastructure blocks surrounding **any typed college or university worldwide** without third-party API token limitations.
 *   **📈 Predictive Overflow Forecasting:** Computes real-time telemetry velocities for smart bins to estimate hours remaining until capacity limits are breached.
 *   **🛠️ Operational Simulation Engine:** Fast-forwards time progression, triggers/resolves plumbing pipe water anomalies, or dispatches a janitorial sweep to dynamically reset active sensor states.
@@ -20,7 +20,7 @@
 
 *   **Frontend UI:** Streamlit (Responsive wide-layout interface)
 *   **Language Engine:** Python 3.x
-*   **AI Engine:** Google GenAI SDK (`gemini-3.8-flash` model endpoint)
+*   **AI Engine:** Google GenAI SDK (default `gemini-2.5-flash` with fallback to supported Gemini model names)
 *   **Mapping & Data Processing:** OpenStreetMap Nominatim API, Pandas, Requests
 *   **Image Handling:** Pillow (PIL)
 
